@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+    <title>QuestLog: Level Up Your Life</title>
+</head>
+<body>
+    <div class="game-container">
+        <h1>🛡️ Hero Stats</h1>
+        
+        <div class="stats">
+            <p>Level: <span id="level">1</span></p>
+            <p>XP: <span id="xp">0</span> / <span id="next-level-xp">100</span></p>
+            <div class="progress-container">
+                <div id="progress-bar"></div>
+            </div>
+        </div>
+
+        <button onclick="resetGame()" class="reset-btn">Reset Character</button>
+
+        <div class="input-section">
+            <input type="text" id="taskInput" placeholder="Enter a new quest...">
+            <button onclick="addTask()">Add Quest</button>
+        </div>
+
+        <ul id="taskList"></ul>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
