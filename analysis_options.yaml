@@ -1,0 +1,7 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # Keep the code readable for a Dart beginner: no clever one-liners
+    # that hide what is happening.
+    prefer_single_quotes: true

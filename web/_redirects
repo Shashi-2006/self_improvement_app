@@ -1,0 +1,4 @@
+# Cloudflare Pages SPA fallback: Flutter web is a single-page app, so every
+# route serves index.html instead of 404ing. This file is copied into
+# build/web/ by `flutter build web`.
+/*  /index.html  200

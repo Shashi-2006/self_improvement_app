@@ -1,0 +1,31 @@
+name: self_improvement_app
+description: "Turn a good habit into a hobby. A discipline / self-improvement app: habit timers, dynamic XP, leaderboards, habit-only chat, an AI weekly planner, screen-time awareness and a weekly orbit recap."
+# Prevent accidental publishing to pub.dev.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.0
+  flutter: ">=3.24.0"
+
+# Small, deliberate dependency list. Charts, orbit animation and the planner
+# are hand-written Flutter, so the project stays small and easy to learn from.
+dependencies:
+  flutter:
+    sdk: flutter
+  # Local persistence of app data (habits, sessions, water logs).
+  shared_preferences: ^2.3.2
+  # Session tokens + lockout state. On Android this is the Keystore, on iOS
+  # the Keychain — never plain text. See SECURITY.md for the full story.
+  flutter_secure_storage: ^9.2.2
+  # SHA-256 for salted password hashing (local accounts only — Firebase Auth
+  # replaces this when the backend is enabled).
+  crypto: ^3.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

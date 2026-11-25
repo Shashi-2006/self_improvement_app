@@ -1,0 +1,67 @@
+// Firestore security rules — Self-Improvement App.
+//
+// HOW TO APPLY: Firebase console → Firestore Database → Rules → paste this
+// file → Publish. These rules are the enforcement behind the promises in
+// SECURITY.md. They are NOT active just because this file is in the repo —
+// the console is the source of truth, so verify after pasting.
+//
+// THE THREE RULES THAT MATTER:
+//  1. A user can read/write ONLY their own data (users/{their-uid}/**).
+//  2. The leaderboard is READ-ONLY for clients. Only a Cloud Function with
+//     the Admin SDK writes it — nobody can fake their own XP.
+//  3. XP is never accepted from a client. Clients write SESSIONS
+//     (habit, elapsed seconds, date); a Cloud Function recomputes XP with
+//     the same formula as lib/services/xp_calculator.dart and updates the
+//     totals. "Give me 1000 XP" from a client is rejected by design.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Own data only ──────────────────────────────────────────────────────
+    // users/{uid} and everything under it: habits, sessions, water logs,
+    // plans, XP rates. Nobody else's uid, nobody else's data.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == uid;
+    }
+
+    // ── Leaderboard: read-only for clients ───────────────────────────────
+    // A Cloud Function recomputes these from users' sessions. Clients can
+    // read the ranking, but write is always false — even for their own row.
+    match /leaderboard/{scope} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // ── Habit-only group chat ────────────────────────────────────────────
+    // Only members of the group may read. Members may CREATE a message
+    // (as themselves, authorUid must equal their uid). Nobody may edit or
+    // delete any message — the history is append-only.
+    match /groups/{groupId}/messages/{messageId} {
+      allow read: if request.auth != null
+        && request.auth.uid in get(
+          /databases/$(database)/documents/groups/$(groupId)
+        ).data.memberUids;
+      allow create: if request.auth != null
+        && request.auth.uid in get(
+          /databases/$(database)/documents/groups/$(groupId)
+        ).data.memberUids
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(
+          ['authorUid', 'authorName', 'text', 'at']);
+      allow update, delete: if false;
+    }
+
+    // Group metadata: members can read it, nobody edits it from a client.
+    match /groups/{groupId} {
+      allow read: if request.auth != null
+        && request.auth.uid in resource.data.memberUids;
+      allow write: if false;
+    }
+
+    // ── Everything else: denied by default ───────────────────────────────
+    // There is no catch-all allow. A collection not listed here cannot be
+    // read or written by any client.
+  }
+}
