@@ -32,10 +32,17 @@ Implemented in `lib/services/auth_service.dart`:
   enforced in `AuthService`, not in the UI — the login screen cannot
   bypass it, and it survives an app restart. The error message never says
   whether the email exists, so nobody can probe for accounts.
-- **Session tokens are random 32-byte values** stored in
-  `flutter_secure_storage` — Android Keystore / iOS Keychain. Signing out
-  deletes the token. On startup the token is verified against a hash stored
-  with the account; a forged token signs the user out.
+- **Sessions are JWTs** (`lib/services/jwt_service.dart`, HS256). On
+  sign-in the app issues a signed token (subject = the email, 7-day
+  expiry) and stores it in `flutter_secure_storage` — Android Keystore /
+  iOS Keychain. Signing out deletes the token. On startup the token's
+  signature and expiry are VERIFIED before it is trusted; a tampered or
+  expired token signs the user out. The signing key is generated once per
+  device and kept in secure storage — never in code, so a token cannot be
+  forged from the source alone. Honest limit: a stolen JWT is usable
+  until it expires (7 days), and the key lives on the device, so this
+  proves "issued here, not tampered with" — not identity to a server.
+  Real server-side verification arrives with Firebase Auth ID tokens.
 - **Web caveat (be honest about it):** `flutter_secure_storage` on web
   stores in browser localStorage, which is not hardware-backed. Real
   accounts on the web build are therefore session-scoped, and the portfolio
@@ -45,7 +52,7 @@ Implemented in `lib/services/auth_service.dart`:
 
 | Data | Where | Why it is safe |
 |---|---|---|
-| Session token, lockout state | `flutter_secure_storage` (Keystore / Keychain) | Hardware-backed on mobile, never plain text |
+| Session token (JWT), lockout state, JWT signing key | `flutter_secure_storage` (Keystore / Keychain) | Hardware-backed on mobile, never plain text |
 | Password hash + salt | SharedPreferences (local accounts) | A hash is not a password; 1,000-round SHA-256 makes guessing slow |
 | Habits, sessions, water, XP | SharedPreferences (JSON) | Local-only data; no account, no network in v1 |
 | Firebase config (later) | `google-services.json` from your console | `.gitignore`d; never committed |

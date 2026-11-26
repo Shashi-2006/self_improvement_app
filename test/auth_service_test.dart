@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:self_improvement_app/services/auth_service.dart';
+import 'package:self_improvement_app/services/jwt_service.dart';
 
 /// A clock the test controls, so lockout timing is deterministic.
 class _FakeClock {
@@ -8,12 +11,14 @@ class _FakeClock {
 
 void main() {
   late AuthService auth;
+  late MemoryTokenStore tokens;
   late _FakeClock clock;
 
   setUp(() {
     clock = _FakeClock();
+    tokens = MemoryTokenStore();
     auth = AuthService(
-      tokens: MemoryTokenStore(),
+      tokens: tokens,
       accounts: MemoryAccountStore(),
       now: () => clock.now,
     );
@@ -82,6 +87,47 @@ void main() {
       await auth.signUp('a@b.com', 'longpassword123');
       expect(await auth.restoreSession(), 'a@b.com');
       await auth.signOut();
+      expect(await auth.restoreSession(), isNull);
+    });
+  });
+
+  group('JWT sessions', () {
+    test('the stored session is a signed JWT for the user', () async {
+      await auth.signUp('a@b.com', 'longpassword123');
+      final stored = await tokens.read('sia_session_token');
+      expect(stored, isNotNull);
+      expect(stored!.split('.').length, 3);
+
+      // Rebuild the verifier from the stored per-device key, the way
+      // restoreSession() does internally.
+      final keyB64 = await tokens.read('sia_jwt_signing_key');
+      expect(keyB64, isNotNull);
+      final padded = keyB64! + ('=' * ((4 - keyB64.length % 4) % 4));
+      final jwt = JwtService(signingKey: base64Url.decode(padded));
+      final claims = jwt.verify(stored, now: clock.now);
+      expect(claims, isNotNull);
+      expect(claims!['sub'], 'a@b.com');
+      expect(claims['type'], 'session');
+    });
+
+    test('a tampered stored token signs the user out', () async {
+      await auth.signUp('a@b.com', 'longpassword123');
+      expect(await auth.restoreSession(), 'a@b.com');
+      await tokens.write('sia_session_token', 'x.y.z');
+      expect(await auth.restoreSession(), isNull);
+    });
+
+    test('an expired session signs the user out', () async {
+      await auth.signUp('a@b.com', 'longpassword123');
+      expect(await auth.restoreSession(), 'a@b.com');
+      // Sessions last 7 days; 8 days later the token is dead.
+      clock.now = clock.now.add(const Duration(days: 8));
+      expect(await auth.restoreSession(), isNull);
+    });
+
+    test('a session token paired with another email is rejected', () async {
+      await auth.signUp('a@b.com', 'longpassword123');
+      await tokens.write('sia_session_email', 'someone-else@b.com');
       expect(await auth.restoreSession(), isNull);
     });
   });

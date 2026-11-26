@@ -1,23 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// AUTH — local accounts, lockout, and secure token storage.
+// AUTH — local accounts, lockout, and JWT sessions.
 //
 // THE HONEST VERSION: v1 has NO server. Accounts live on the phone, and the
 // code below is the real thing for a local-first app — not a mock:
 //  * Passwords are NEVER stored in plain text. They are salted and hashed
 //    with SHA-256 (1,000 rounds) and only the hash is kept.
-//  * The session token lives in flutter_secure_storage: Android Keystore /
-//    iOS Keychain. On web it falls back to browser storage (see SECURITY.md)
-//    — which is why the portfolio demo uses Demo Mode, not a real account.
+//  * Sessions are JWTs (see lib/services/jwt_service.dart): on sign-in the
+//    app issues a signed token (subject = email, 7-day expiry) and stores
+//    it in flutter_secure_storage: Android Keystore / iOS Keychain. On web
+//    it falls back to browser storage (see SECURITY.md) — which is why the
+//    portfolio demo uses Demo Mode, not a real account.
+//  * On startup, restoreSession() VERIFIES the token's signature and expiry
+//    before trusting it. A tampered or expired token signs the user out.
+//    The signing key is generated once per device and kept in secure
+//    storage — it never lives in code, so a token cannot be forged from
+//    the source alone.
 //  * After 5 wrong passwords the account locks for 15 minutes.
 //    (Same bar as the Inventory Management System: 5 attempts / 15 min.)
-//  * Tokens are random 32-byte values. A token is only accepted if its hash
-//    matches the one stored with the account — stealing the stored token
-//    alone is not enough, and signing out deletes it.
 //
 // WHEN FIREBASE IS ENABLED, this whole file is replaced by Firebase Auth
-// (anonymous, then Google). The lockout rule moves server-side — a local
-// lockout cannot protect a server account. The rest of the app does not
-// change: it only asks "who is signed in?" and "are we in demo mode?"
+// (anonymous, then Google) — whose ID tokens are JWTs too, verified
+// server-side by the Admin SDK. The lockout rule moves server-side — a
+// local lockout cannot protect a server account. The rest of the app does
+// not change: it only asks "who is signed in?" and "are we in demo mode?"
 // ─────────────────────────────────────────────────────────────────────────────
 
 import 'dart:convert';
@@ -27,6 +32,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'jwt_service.dart';
+
 /// After this many wrong passwords, the account locks.
 const int maxFailedAttempts = 5;
 
@@ -35,6 +42,12 @@ const Duration lockoutDuration = Duration(minutes: 15);
 
 /// Minimum password length (same bar as the Inventory Management System).
 const int minPasswordLength = 10;
+
+/// How long a signed-in session lasts. After this the JWT expires and
+/// restoreSession() signs the user out — they sign in again. Short enough
+/// that a stolen token stops working on its own; long enough that the app
+/// does not nag every day.
+const Duration sessionDuration = Duration(days: 7);
 
 /// Where a session token is kept. The interface exists so tests can use an
 /// in-memory store instead of the phone's Keystore/Keychain.
@@ -176,6 +189,12 @@ class AuthService {
   static const _sessionKey = 'sia_session_token';
   static const _sessionEmailKey = 'sia_session_email';
 
+  /// The per-device JWT signing key (base64url of 32 random bytes).
+  /// Generated once and kept in secure storage — never in code, never in
+  /// SharedPreferences. Deleting it invalidates every session on the
+  /// device, because no new token can be verified against the old key.
+  static const _jwtKey = 'sia_jwt_signing_key';
+
   String _accountKey(String email) =>
       'sia_account_${email.trim().toLowerCase()}';
   String _lockoutKey(String email) =>
@@ -268,20 +287,18 @@ class AuthService {
   }
 
   /// On startup: is there a valid saved session? Returns the email, or
-  /// null when nobody is signed in (or the token was tampered with).
+  /// null when nobody is signed in (or the token was tampered with or
+  /// expired). The JWT itself carries the subject and the expiry — the
+  /// signature is what proves it is genuine, so no account lookup is
+  /// needed to trust it.
   Future<String?> restoreSession() async {
     final token = await _tokens.read(_sessionKey);
     final email = await _tokens.read(_sessionEmailKey);
     if (token == null || email == null) return null;
-    final raw = await _accounts.read(_accountKey(email));
-    if (raw == null) return null;
-    final data = jsonDecode(raw) as Map<String, dynamic>;
-    final account = _Account.fromJson(data);
-    // The stored sessionHash is a hash OF the token; the raw token lives
-    // only in secure storage. If they don't match, the session is forged.
-    final storedSessionHash = data['sessionHash'] as String?;
-    if (storedSessionHash == null ||
-        storedSessionHash != _sessionHashFor(account, token)) {
+    final jwt = await _jwt();
+    final claims = jwt.verify(token, now: _now());
+    if (claims == null || claims['sub'] != email) {
+      // Tampered, expired, or for a different email — do not trust it.
       await signOut();
       return null;
     }
@@ -329,35 +346,40 @@ class AuthService {
     await _tokens.delete(_lockoutKey(email));
   }
 
-  // ── Hashing ──────────────────────────────────────────────────────────────
+  // ── JWT sessions ─────────────────────────────────────────────────────────
 
-  Future<void> _createSession(String email) async {
-    final token = _randomToken();
-    await _tokens.write(_sessionKey, token);
-    await _tokens.write(_sessionEmailKey, email);
-    // Store a hash of the token next to the account so restoreSession can
-    // verify the token without ever storing the token itself twice.
-    final raw = await _accounts.read(_accountKey(email));
-    if (raw != null) {
-      final account =
-          _Account.fromJson(jsonDecode(raw) as Map<String, dynamic>);
-      await _accounts.write(
-        _accountKey(email),
-        jsonEncode({
-          'email': account.email,
-          'salt': account.salt,
-          'hash': account.hash,
-          'sessionHash': _sessionHashFor(account, token),
-        }),
-      );
+  /// Loads the per-device signing key (generating it on first use) and
+  /// returns a JwtService bound to it.
+  Future<JwtService> _jwt() async {
+    var encoded = await _tokens.read(_jwtKey);
+    if (encoded == null) {
+      encoded = _randomToken();
+      await _tokens.write(_jwtKey, encoded);
     }
+    return JwtService(signingKey: _b64decode(encoded));
   }
 
-  String _sessionHashFor(_Account account, String token) =>
-      _hashToken('$token:${account.salt}');
+  /// base64url decode with the padding re-added (our stored key omits it,
+  /// as JWTs do).
+  List<int> _b64decode(String input) {
+    final padded = input + ('=' * ((4 - input.length % 4) % 4));
+    return base64Url.decode(padded);
+  }
 
-  String _hashToken(String value) =>
-      sha256.convert(utf8.encode(value)).toString();
+  /// Issues a signed JWT for this email and stores it as the session.
+  /// The token — not an opaque random value — is what restoreSession()
+  /// verifies on the next launch.
+  Future<void> _createSession(String email) async {
+    final jwt = await _jwt();
+    final token = jwt.issue(
+      subject: email,
+      expiresIn: sessionDuration,
+      extraClaims: const {'type': 'session'},
+      issuedAt: _now(),
+    );
+    await _tokens.write(_sessionKey, token);
+    await _tokens.write(_sessionEmailKey, email);
+  }
 
   String _randomSalt() {
     final random = Random.secure();
